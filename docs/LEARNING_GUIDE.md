@@ -374,6 +374,44 @@ Model Context Protocol 连接管理，让 agent 能调用外部工具。
 
 ## 附录：横切面主题
 
+### Config Loader 分层合并
+
+配置从多个来源加载，按优先级合并。
+
+**分层模型**（高优先级覆盖低优先级）:
+```
+1. MDM managed preferences (macOS only)     ← 最高优先级
+2. System managed config (managed_config.toml)
+3. Session flags (CLI --config key=value)
+4. User config (~/.codex/config.toml)        ← 最低优先级
+```
+
+**ConfigLayerStack** (`core/src/config_loader/`):
+- `effective_config()` — 合并后的最终配置
+- `origins()` — 每个 key 来自哪一层（用于 UI 显示）
+- `layers_high_to_low()` — 所有层（含 disabled 层，供 UI 展示）
+- 递归 TOML 合并（`merge.rs`）
+- 稳定指纹哈希（`fingerprint.rs`）用于乐观并发控制
+
+### State DB — SQLite 持久化
+
+`~/.codex/state.db`，24 个 migration，存储线程和记忆元数据。
+
+**核心表**:
+| 表 | 用途 |
+|---|------|
+| `threads` | 线程元数据（id、rollout_path、model、cwd、git info、tokens_used） |
+| `stage1_outputs` | Memories Phase 1 输出（raw_memory、rollout_summary） |
+| `jobs` | 通用 job 调度（kind、status、lease_until、retry、watermark） |
+| `thread_spawn_edges` | 父子 agent 关系（parent_thread_id → child_thread_id） |
+| `agent_jobs` + `agent_job_items` | CSV 批量 agent 任务 |
+| `thread_dynamic_tools` | 线程级动态工具持久化 |
+
+**Job 调度机制**（`jobs` 表）:
+- `ownership_token` + `lease_until` — 分布式锁，防止并发重复处理
+- `retry_at` + `retry_remaining` — 失败重试，指数退避
+- `input_watermark` + `last_success_watermark` — 增量处理进度追踪
+
 ### Context 管理与 Compact 系统
 
 agent 能持续长对话的关键机制。
