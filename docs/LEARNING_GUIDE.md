@@ -795,6 +795,42 @@ struct Features {
 - 支持 config TOML、CLI `--enable/--disable`、legacy 别名
 - `Experimental` 阶段的功能可通过 TUI `/experimental` 菜单切换
 
+### Apply Patch — 代码修改格式
+
+Codex 自定义的补丁格式（非标准 diff），是 agent 修改代码的主要方式。
+
+**格式** (`apply-patch/src/parser.rs`):
+```
+*** Begin Patch
+*** Add File: path/to/new_file.rs
++line 1
++line 2
+
+*** Delete File: path/to/old_file.rs
+
+*** Update File: path/to/existing.rs
+*** Move to: path/to/renamed.rs    (可选：重命名)
+@@ context line to locate position
+-old line
++new line
+ unchanged line
+*** End of File
+*** End Patch
+```
+
+**3 种 Hunk 类型**:
+- `AddFile` — 创建新文件
+- `DeleteFile` — 删除文件
+- `UpdateFile` — 修改文件（支持 `Move to` 重命名）
+
+**定位机制**：`@@` 后跟 context line（文本内容），通过 `seek_sequence.rs` 模糊匹配定位修改位置。不依赖行号，对模型更友好。
+
+**关键文件**:
+- `apply-patch/src/parser.rs` — 解析器，Lark 语法定义
+- `apply-patch/src/seek_sequence.rs` — 上下文行模糊匹配
+- `apply-patch/src/invocation.rs` — 调用入口
+- `apply-patch/apply_patch_tool_instructions.md` — 给模型的使用说明
+
 ### 关键设计模式总结
 
 | 模式 | 用途 | 示例 |
