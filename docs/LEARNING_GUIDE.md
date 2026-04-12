@@ -671,6 +671,33 @@ codex (binary)
       → 进入阶段三描述的 agent loop
 ```
 
+### Ghost Snapshot — Undo 系统
+
+基于 git 的文件系统快照，让 agent 的修改可以一键撤销。
+
+**工作流程**:
+```
+Turn 开始
+  → GhostSnapshotTask (tasks/ghost_snapshot.rs)
+    → spawn_blocking { create_ghost_commit() }
+    → 创建一个不在任何分支上的 git commit（"ghost commit"）
+    → 将 ResponseItem::GhostSnapshot { ghost_commit } 写入 history
+    → 超过 240 秒发出警告（可能有大文件需要 .gitignore）
+
+用户执行 /undo
+  → UndoTask (tasks/undo.rs)
+    → 从 history 中倒序查找最近的 GhostSnapshot
+    → spawn_blocking { restore_ghost_commit() } — 恢复文件系统状态
+    → 从 history 中移除该 snapshot item
+    → 发送 UndoCompleted 事件
+```
+
+**关键设计**:
+- Ghost commit 不污染 git 分支历史
+- 快照在后台异步创建，不阻塞 turn 执行
+- 支持 `ghost_snapshot.disable_warnings` 配置
+- 大文件检测：报告被忽略的大文件和目录
+
 ### 关键设计模式总结
 
 | 模式 | 用途 | 示例 |
