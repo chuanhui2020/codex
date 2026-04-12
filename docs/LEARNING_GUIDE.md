@@ -421,6 +421,47 @@ struct Policy {
 - 支持 heuristics fallback 作为兜底策略
 - 支持运行时动态追加规则（`blocking_append_allow_prefix_rule`）
 
+### 启动流程：从 CLI 到 Session 就绪
+
+完整的启动链路，帮助理解各层如何串联。
+
+```
+codex (binary)
+  │
+  ├─ cli/src/main.rs: main()
+  │   → arg0_dispatch_or_else()  // 支持多二进制名（codex-linux-sandbox 等）
+  │   → cli_main()
+  │       → MultitoolCli::parse()  // clap 解析命令行
+  │       → match subcommand {
+  │           None → run_interactive_tui()
+  │                   → codex_tui::run_main()
+  │                     → 初始化 tracing、terminal 检测
+  │                     → InProcessAppServerClient::start()  // 启动进程内 app-server
+  │                     → App::new() → 进入 TUI 事件循环
+  │
+  │           Exec → codex_exec::run_main()     // 非交互模式
+  │           AppServer → codex_app_server::run_main_with_transport()  // IDE 模式
+  │           McpServer → codex_mcp_server::run_main()
+  │           Login/Logout → 认证流程
+  │         }
+  │
+  ├─ app-server/src/in_process.rs: start()
+  │   → MessageProcessor::new()  // JSON-RPC 消息处理器
+  │   → initialize/initialized 握手
+  │   → 返回 InProcessClientHandle
+  │
+  ├─ 用户发送第一条消息 (Op::UserTurn)
+  │   → app-server 转发到 core
+  │   → Codex::spawn() (core/src/codex.rs:449)
+  │       → 加载 config、auth、models、skills、plugins、MCP
+  │       → Session::new()
+  │       → tokio::spawn(submission_loop())  // 启动主循环
+  │       → 返回 CodexSpawnOk { codex, thread_id }
+  │
+  └─ submission_loop 开始接收 Op
+      → 进入阶段三描述的 agent loop
+```
+
 ### 关键设计模式总结
 
 | 模式 | 用途 | 示例 |
