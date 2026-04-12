@@ -462,6 +462,43 @@ skill_instructions (来自激活的 skill)
 - `SkillInstructions` — 从 skill 定义加载，包含 name、path、contents
 - Fragment marker 机制允许 context diff：只发送变化的部分，而非每次全量注入
 
+### 工具执行流程：从 LLM 响应到实际执行
+
+完整追踪一次工具调用的生命周期。
+
+```
+try_run_sampling_request() 收到 ResponseEvent::OutputItemDone(item)
+  │
+  ├─ handle_output_item_done() (stream_events_utils.rs:205)
+  │   → ToolRouter::build_tool_call(item) — 解析 ResponseItem 为 ToolCall
+  │     ├─ FunctionCall → 检查是否 MCP 工具 → ToolPayload::Function 或 Mcp
+  │     ├─ LocalShellCall → ToolPayload::LocalShell
+  │     ├─ CustomToolCall → ToolPayload::Custom
+  │     ├─ ToolSearchCall → ToolPayload::ToolSearch
+  │     └─ 其他 → None（不是工具调用）
+  │
+  │   → tool_runtime.handle_tool_call(call) — 异步执行
+  │     加入 FuturesOrdered<in_flight>
+  │
+  ├─ ToolCallRuntime::handle_tool_call() (tools/parallel.rs:55)
+  │   → tokio::spawn + tokio::select! {
+  │       cancelled → aborted_response（"aborted by user"）
+  │       result → {
+  │           并行控制：RwLock
+  │             supports_parallel → read lock（可并发）
+  │             !supports_parallel → write lock（独占串行）
+  │           router.dispatch_tool_call_with_code_mode_result()
+  │       }
+  │     }
+  │   → 错误转为 tool output 写回 history（模型可见），不会 panic
+  │
+  ├─ ToolRouter::dispatch → ToolRegistry → ToolHandler::invoke()
+  │   → ToolOrchestrator::run() — 审批→沙箱→执行→重试（见阶段四）
+  │
+  └─ 工具结果作为 ResponseInputItem 写回 history
+      → run_turn 主循环的下一次迭代将结果发给 LLM
+```
+
 ### 三大核心数据结构
 
 理解这三个结构是读懂整个系统的基础。
