@@ -412,6 +412,32 @@ Model Context Protocol 连接管理，让 agent 能调用外部工具。
 - `retry_at` + `retry_remaining` — 失败重试，指数退避
 - `input_watermark` + `last_success_watermark` — 增量处理进度追踪
 
+### Network Proxy — 网络访问控制
+
+本地代理服务器，拦截和控制 agent 发起的所有网络请求。
+
+**架构** (`network-proxy/src/`):
+```
+子进程（shell 命令）
+  → HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 环境变量
+    → NetworkProxy（本地 HTTP + SOCKS5 代理）
+      → NetworkPolicyDecider（域名/协议策略匹配）
+        ├─ Allow → 转发到上游
+        ├─ Deny → 返回拒绝响应 + 通知 BlockedRequestObserver
+        └─ 需要审批 → 触发 network approval 流程
+```
+
+**关键组件**:
+- `proxy.rs` — `NetworkProxy`/`NetworkProxyBuilder`，启动 HTTP + SOCKS5 监听
+- `http_proxy.rs` — HTTP/HTTPS 代理实现
+- `socks5.rs` — SOCKS5 代理实现
+- `mitm.rs` — MITM 能力，可检查 HTTPS 流量内容
+- `certs.rs` — 动态 CA 证书生成（用于 MITM）
+- `network_policy.rs` — `NetworkPolicyDecider`，域名/协议策略匹配
+- `config.rs` — `NetworkProxyConfig`，域名权限（allow/deny）列表
+- `runtime.rs` — `ConfigReloader`，运行时动态更新策略；`BlockedRequestObserver` 通知
+- `state.rs` — 约束验证，确保策略不违反 managed requirements
+
 ### Context 管理与 Compact 系统
 
 agent 能持续长对话的关键机制。
