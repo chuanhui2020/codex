@@ -351,15 +351,20 @@ Model Context Protocol 连接管理，让 agent 能调用外部工具。
 
 ### 其他值得了解的 crate
 
-- `codex-rs/skills/` — 技能定义和元数据
-- `codex-rs/core/src/skills/` — 技能加载、注入、依赖解析
+- `codex-rs/skills/` — 技能定义，内置 skills 嵌入二进制（imagegen、openai-docs、skill-creator 等）
+- `codex-rs/core-skills/` — 技能加载、注入、依赖解析、marketplace 交互
+- `codex-rs/plugin/` — 插件标识和能力摘要（skills + MCP servers + app connectors）
+- `codex-rs/core/src/plugins/` — PluginsManager，管理插件加载、安装、marketplace
+- `codex-rs/core/src/memories/` — 跨 session 记忆管道（两阶段：提取 + 合并）
+- `codex-rs/realtime-webrtc/` — WebRTC 语音对话（仅 macOS），SDP offer/answer
 - `codex-rs/exec/` — 非交互式执行模式
-- `codex-rs/execpolicy/` — 执行策略评估（Starlark 规则引擎）
-- `codex-rs/rollout/` — 事件持久化和回放
+- `codex-rs/execpolicy/` — 执行策略评估（前缀匹配规则引擎）
+- `codex-rs/rollout/` — JSONL 事件持久化和回放
 - `codex-rs/state/` — SQLite 线程状态数据库
 - `codex-rs/login/` — 认证（ChatGPT OAuth、API key、device code）
 - `codex-rs/otel/` — OpenTelemetry 可观测性
 - `codex-rs/network-proxy/` — 网络代理管理
+- `codex-rs/collaboration-mode-templates/` — 协作模式模板（Plan/Execute/Default/PairProgramming）
 
 ## 学习建议
 
