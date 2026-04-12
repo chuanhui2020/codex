@@ -698,6 +698,42 @@ Turn 开始
 - 支持 `ghost_snapshot.disable_warnings` 配置
 - 大文件检测：报告被忽略的大文件和目录
 
+### 模板系统 — Agent 的"灵魂"
+
+`core/templates/` 目录下的模板定义了 Codex 的行为和人格。
+
+**模型指令** (`model_instructions/gpt-5.2-codex_instructions_template.md`):
+- 开头："You are Codex, a coding agent based on GPT-5"
+- `{{ personality }}` 占位符 — 运行时注入人格模板
+- 详细的格式化规则（GitHub Markdown、不用 emoji、不用嵌套列表、文件引用格式）
+- 编辑约束（默认 ASCII、不 revert 用户改动、不用 `git reset --hard`、非交互 git）
+- Plan tool 指导（简单任务跳过、不做单步计划）
+- 前端任务特殊指导（避免"AI slop"、大胆设计、不要紫色偏好）
+
+**人格模板** (`personalities/`):
+- `friendly` — 温暖、鼓励、协作，优化团队士气，"NEVER curt or dismissive"
+- `pragmatic` — 务实、高效、严谨，"quiet joy"，承认好工作但避免 cheerleading
+
+**Orchestrator 模板** (`agents/orchestrator.md`) — 多 agent 编排指令：
+- "Prefer multiple sub-agents to parallelize your work"
+- "When sub-agents are running, wait for them before yielding"
+- "Your only role becomes to coordinate them"
+- 用户更新规范：长时间工作时发 heads-down note，恢复时总结发现
+
+**Compact prompt** (`compact/prompt.md`):
+- 极简指令："Create a handoff summary for another LLM that will resume the task"
+- 要求：进度、决策、约束、下一步、关键数据
+
+**Guardian Policy** (`guardian/policy.md`) — 4 大风险类别：
+| 类别 | 风险等级 | 示例 |
+|------|---------|------|
+| Data Exfiltration | high/critical | 向不可信目标发送私有数据、凭证 |
+| Credential Probing | high | 从浏览器 profile 提取 token/cookie |
+| Persistent Security Weakening | high/critical | 修改安全设置、过宽权限 |
+| Destructive Actions | high/critical | 删除数据、force push protected branch |
+
+关键规则：sandbox retry 本身不算可疑；本地文件操作通常 low risk；git 操作只影响用户自己的 feature branch 时是 medium。
+
 ### Feature Flags 系统
 
 集中式功能开关，控制整个系统的行为。
