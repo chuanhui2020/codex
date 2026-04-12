@@ -462,6 +462,67 @@ skill_instructions (来自激活的 skill)
 - `SkillInstructions` — 从 skill 定义加载，包含 name、path、contents
 - Fragment marker 机制允许 context diff：只发送变化的部分，而非每次全量注入
 
+### 三大核心数据结构
+
+理解这三个结构是读懂整个系统的基础。
+
+**Session** (`codex.rs:825`) — 会话级状态，生命周期 = 整个对话：
+```rust
+struct Session {
+    conversation_id: ThreadId,           // 唯一会话 ID
+    tx_event: Sender<Event>,             // 事件发送通道（→ UI）
+    state: Mutex<SessionState>,          // 可变状态（history、config 等）
+    active_turn: Mutex<Option<ActiveTurn>>, // 当前活跃 turn
+    mailbox: Mailbox,                    // agent 间通信（发送端）
+    mailbox_rx: Mutex<MailboxReceiver>,  // agent 间通信（接收端）
+    guardian_review_session: GuardianReviewSessionManager,
+    services: SessionServices,           // 所有共享服务
+    features: ManagedFeatures,           // 功能开关（session 内不变）
+    // ...
+}
+```
+
+**TurnContext** (`codex.rs:866`) — turn 级状态，生命周期 = 单次 turn：
+```rust
+struct TurnContext {
+    sub_id: String,                      // turn 唯一 ID
+    config: Arc<Config>,                 // 配置快照
+    model_info: ModelInfo,               // 模型信息
+    provider: ModelProviderInfo,         // 提供商信息
+    cwd: AbsolutePathBuf,               // 工作目录
+    approval_policy: Constrained<AskForApproval>,  // 审批策略
+    sandbox_policy: Constrained<SandboxPolicy>,    // 沙箱策略
+    reasoning_effort: Option<ReasoningEffortConfig>,
+    collaboration_mode: CollaborationMode,
+    tools_config: ToolsConfig,           // 工具配置
+    dynamic_tools: Vec<DynamicToolSpec>, // 动态工具
+    session_telemetry: SessionTelemetry, // 遥测
+    // ...
+}
+```
+
+**SessionServices** (`state/service.rs:32`) — 共享服务注册表：
+```rust
+struct SessionServices {
+    model_client: ModelClient,                    // LLM 通信
+    auth_manager: Arc<AuthManager>,               // 认证
+    models_manager: Arc<ModelsManager>,            // 模型目录
+    exec_policy: Arc<ExecPolicyManager>,           // 执行策略
+    mcp_connection_manager: Arc<RwLock<McpConnectionManager>>, // MCP
+    agent_control: AgentControl,                   // 多 agent 控制
+    hooks: Hooks,                                  // 生命周期钩子
+    rollout: Mutex<Option<RolloutRecorder>>,        // 持久化
+    tool_approvals: Mutex<ApprovalStore>,           // 审批缓存
+    guardian_rejections: Mutex<HashMap<...>>,       // Guardian 拒绝记录
+    network_proxy: Option<StartedNetworkProxy>,     // 网络代理
+    skills_manager: Arc<SkillsManager>,            // 技能管理
+    plugins_manager: Arc<PluginsManager>,           // 插件管理
+    analytics_events_client: AnalyticsEventsClient, // 分析
+    session_telemetry: SessionTelemetry,           // 遥测
+    // ...
+}
+```
+
 ### ModelClient — LLM 通信层
 
 Codex 与 OpenAI API 交互的核心，支持 WebSocket 和 HTTP 双通道。
