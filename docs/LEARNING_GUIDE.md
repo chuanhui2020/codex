@@ -795,6 +795,53 @@ struct Features {
 - 支持 config TOML、CLI `--enable/--disable`、legacy 别名
 - `Experimental` 阶段的功能可通过 TUI `/experimental` 菜单切换
 
+### Memories — 跨 Session 记忆系统
+
+两阶段管道，让 agent 在不同 session 间保持记忆。
+
+**触发条件**：root session 启动时，非临时、非子 agent、memory feature 启用、state DB 可用。
+
+**Phase 1: Rollout Extraction（per-thread，并行）**:
+```
+选择最近的 eligible rollouts（state DB）
+  → 过滤 memory-relevant response items
+  → 并行发给 LLM（concurrency cap）
+  → 提取结构化输出：
+      raw_memory — 详细记忆
+      rollout_summary — 紧凑摘要
+      rollout_slug — 可选标识
+  → 自动脱敏（redact secrets）
+  → 存回 state DB
+```
+
+**Phase 2: Global Consolidation（全局单例）**:
+```
+claim 全局 phase-2 job（防止并发）
+  → 加载 Phase 1 输出
+  → 计算 selection diff（added/retained/removed）
+  → 同步到文件系统：
+      raw_memories.md — 合并的原始记忆
+      rollout_summaries/ — 每个 rollout 一个摘要文件
+  → 启动 consolidation sub-agent（无审批、无网络、只写本地）
+  → Watermark 机制追踪进度
+```
+
+**关键设计**:
+- Phase 1 可并行扩展，Phase 2 串行保证一致性
+- DB lease 机制防止重复工作
+- 失败任务有 retry backoff
+- `max_unused_days` 过期淘汰不再使用的记忆
+- `usage_count` + `last_usage` 排序，高频使用的记忆优先保留
+
+**关键文件** (`core/src/memories/`):
+- `start.rs` — 启动入口
+- `phase1.rs` — Phase 1 rollout 提取
+- `phase2.rs` — Phase 2 全局合并
+- `storage.rs` — 文件系统存储
+- `citations.rs` — 记忆引用追踪
+- `usage.rs` — 使用频率追踪
+- `prompts.rs` — 记忆提取 prompt
+
 ### Apply Patch — 代码修改格式
 
 Codex 自定义的补丁格式（非标准 diff），是 agent 修改代码的主要方式。
