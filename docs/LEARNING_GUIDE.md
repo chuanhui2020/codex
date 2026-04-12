@@ -698,6 +698,35 @@ Turn 开始
 - 支持 `ghost_snapshot.disable_warnings` 配置
 - 大文件检测：报告被忽略的大文件和目录
 
+### Feature Flags 系统
+
+集中式功能开关，控制整个系统的行为。
+
+**生命周期**: `UnderDevelopment` → `Experimental` → `Stable` → `Deprecated` → `Removed`
+
+**关键 Feature 枚举** (`features/src/lib.rs`):
+- `GhostCommit` — ghost snapshot undo 系统（Stable）
+- `ShellTool` — shell 工具（Stable）
+- `GuardianApproval` — Guardian 自动审批
+- `MultiAgentV2` — v2 多 agent 路由
+- `Collab` — 协作工具
+- `CodexHooks` — 生命周期钩子
+- `Apps` / `Plugins` — 应用和插件系统
+- `RealtimeConversation` — 实时语音对话
+- `ResponsesWebsockets` / `ResponsesWebsocketsV2` — WebSocket 传输
+
+**Features 结构体**:
+```rust
+struct Features {
+    enabled: BTreeSet<Feature>,           // 启用的功能集合
+    legacy_usages: BTreeSet<LegacyFeatureUsage>, // 旧版兼容追踪
+}
+```
+
+- Session 内不变（`ManagedFeatures` 包装）
+- 支持 config TOML、CLI `--enable/--disable`、legacy 别名
+- `Experimental` 阶段的功能可通过 TUI `/experimental` 菜单切换
+
 ### 关键设计模式总结
 
 | 模式 | 用途 | 示例 |
