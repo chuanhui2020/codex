@@ -734,6 +734,38 @@ Turn 开始
 
 关键规则：sandbox retry 本身不算可疑；本地文件操作通常 low risk；git 操作只影响用户自己的 feature branch 时是 medium。
 
+### Collaboration Mode — 协作模式
+
+4 种模式定义了 agent 与用户的交互方式（`collaboration-mode-templates/templates/`）。
+
+| 模式 | 核心行为 | 适用场景 |
+|------|---------|---------|
+| Default | 标准交互，按需提问 | 日常使用 |
+| Plan | 只探索不修改，输出 `<proposed_plan>` | 复杂任务规划 |
+| Execute | 独立执行，不问问题，做合理假设 | 明确任务的自主执行 |
+| Pair Programming | 结对编程风格 | 协作开发 |
+
+**Plan 模式** 最复杂，3 个阶段：
+1. Ground in environment — 先探索代码库，消除未知（"explore first, ask second"）
+2. Intent chat — 明确目标、成功标准、范围、约束
+3. Implementation chat — 决策完备的规格（approach、API、数据流、边界情况、测试）
+
+严格规则：
+- 只能执行非变更操作（读文件、搜索、静态分析、dry-run）
+- 不能修改文件、运行 formatter、应用 patch
+- 最终计划必须"decision complete"，实现者不需要做任何决策
+
+**Execute 模式** 的核心原则：
+- 信息缺失时做合理假设并继续，不问用户
+- "Be mindful of time" — 大多数 turn 几秒内完成，研究不超过 60 秒
+- 长任务分解为里程碑，边执行边验证
+
+**Multi-agent 指导** (`collab/experimental_prompt.md`):
+- 大任务用多 agent 并行
+- 告诉子 agent 它们不是独自工作，不要影响其他 agent 的成果
+- 测试和配置命令可以委托给子 agent 以优化自身 context
+- 用完子 agent 记得 `close_agent`
+
 ### Feature Flags 系统
 
 集中式功能开关，控制整个系统的行为。
