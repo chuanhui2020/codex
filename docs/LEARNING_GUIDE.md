@@ -14,55 +14,245 @@
 
 从 protocol 开始，因为它定义了所有组件之间的"语言"。
 
-- `codex-rs/protocol/src/` — Event 和 Op 的定义
-- 搞清楚 `Op`（用户操作）和 `Event`（系统事件）这两个核心枚举，后面所有模块都围绕它们转
+- `codex-rs/protocol/src/protocol.rs` — 核心文件，定义 Op 和 EventMsg 两个枚举
+
+**Op（用户→系统）关键变体：**
+- `UserTurn` — 最重要，携带完整上下文（cwd、审批策略、沙箱策略、模型、推理配置）
+- `UserInput` — 旧版简化输入（不含 turn 上下文）
+- `Interrupt` — 中断当前任务
+- `InterAgentCommunication` — agent 间通信
+- `OverrideTurnContext` — 更新会话级默认配置
+- `ExecApproval` / `PatchApproval` — 用户审批决策
+- `Shutdown` — 唯一返回 `true` 退出 submission_loop 的 Op
+
+**EventMsg（系统→用户）关键变体：**
+- `TurnStarted` / `TurnComplete` — turn 生命周期边界
+- `AgentMessage` / `AgentMessageDelta` — 模型输出（完整/流式增量）
+- `ExecCommandBegin` / `ExecCommandEnd` — 命令执行生命周期
+- `ExecApprovalRequest` — 请求用户审批
+- `GuardianAssessment` — guardian 安全评估结果
+- `PatchApplyBegin` / `PatchApplyEnd` — 代码补丁应用
+- `Collab*` 系列 — 多 agent 协作事件
 
 ## 阶段三：核心引擎 — Agent Loop
 
 这是整个系统的心脏，也是最值得花时间的部分。
 
-1. `codex-rs/core/src/codex.rs`（~309KB）— 从 `Codex::spawn()` 入口开始，理解：
-   - Session 初始化流程
-   - Turn 生命周期（用户输入 → 模型调用 → 工具执行 → 响应）
-   - 事件发射机制
-2. `codex-rs/core/src/client.rs` — ModelClient，LLM API 交互层
-   - HTTP 和 WebSocket 双通道
-   - 流式响应处理
-3. `codex-rs/core/src/codex_thread.rs` — 单个对话线程的公共 API
-4. `codex-rs/core/src/thread_manager.rs` — 多线程/多对话管理
+### 核心调用链（从入口到 LLM 交互）
+
+```
+Codex::spawn() (codex.rs:449)
+  → Session::new() → 创建 session
+  → tokio::spawn(submission_loop()) → 启动主循环
+
+submission_loop() (codex.rs:4616)
+  → match sub.op { ... } → 按 Op 类型分发到 handlers
+  → Op::UserInput | Op::UserTurn → handlers::user_input_or_turn()
+
+handlers::user_input_or_turn() (codex.rs:4960)
+  → sess.new_turn_with_sub_id() → 创建新 turn
+  → sess.steer_input() → 尝试导入活跃 turn
+  → sess.spawn_task(RegularTask) → 启动新任务
+
+RegularTask::run() (tasks/regular.rs:36)
+  → 发送 TurnStarted 事件
+  → loop { run_turn() } → 循环直到无 pending input
+
+run_turn() (codex.rs:5971) — 核心主循环
+  → run_pre_sampling_compact() → 预采样压缩
+  → loop {
+      处理 pending input（用户在模型运行时提交的新消息）
+      构建 sampling_request_input（从 history 拉取完整对话）
+      run_sampling_request() → 调 LLM + 处理工具调用
+      如果 token 超限 → auto compact → continue
+      如果 model 需要 follow up → continue
+      否则 → 运行 stop hook → break
+    }
+
+run_sampling_request() (codex.rs:6760)
+  → built_tools() → 构建 ToolRouter（所有可用工具的路由表）
+  → build_prompt() → 从 history + tools 构建完整 prompt
+  → ToolCallRuntime::new() → 创建工具执行运行时
+  → try_run_sampling_request() → 真正调 LLM
+  → 重试逻辑：指数退避 + WebSocket→HTTPS 降级
+
+try_run_sampling_request() (codex.rs:7552) — 流式响应处理
+  → client_session.stream() → 发起流式请求
+  → loop { match stream.next() {
+      ResponseEvent::OutputItemDone → handle_output_item_done() → 工具执行
+      ResponseEvent::OutputTextDelta → 流式文本输出到 UI
+      ResponseEvent::ReasoningSummaryDelta → 推理过程输出
+      ResponseEvent::Completed → 更新 token 用量 → break
+    }}
+  → drain_in_flight() → 等待所有并行工具执行完成
+```
+
+### 关键文件
+
+1. `codex-rs/core/src/codex.rs` — 最大最核心，建议分多次读
+2. `codex-rs/core/src/tasks/regular.rs` — RegularTask，理解 task 抽象
+3. `codex-rs/core/src/tasks/mod.rs` — SessionTask trait 和 spawn_task 逻辑
+4. `codex-rs/core/src/client.rs` — ModelClient，HTTP/WebSocket 双通道
+5. `codex-rs/core/src/codex_thread.rs` — 单个对话线程的公共 API
+6. `codex-rs/core/src/thread_manager.rs` — 多线程/多对话管理
 
 ## 阶段四：工具系统 — Agent 的"手脚"
 
 理解 agent 如何执行动作。
 
-1. `codex-rs/core/src/tools/orchestrator.rs` — 工具编排核心：审批 → 沙箱选择 → 执行 → 重试
-2. `codex-rs/core/src/tools/handlers/` 目录下逐个看：
-   - `shell.rs` — shell 命令执行
-   - `apply_patch.rs` — 代码补丁
-   - `mcp.rs` — MCP 工具调用
-   - `multi_agents.rs` / `multi_agents_v2.rs` — 子 agent 派生
-3. `codex-rs/core/src/tools/sandboxing.rs` — 沙箱策略和权限管理
-4. `codex-rs/core/src/tools/network_approval.rs` — 网络访问审批
+### ToolOrchestrator 核心流程 (`tools/orchestrator.rs`)
+
+```
+ToolOrchestrator::run()
+  │
+  ├─ 1. Approval 阶段
+  │   ├─ ExecApprovalRequirement::Skip → 直接通过（配置允许）
+  │   ├─ ExecApprovalRequirement::Forbidden → 直接拒绝
+  │   └─ ExecApprovalRequirement::NeedsApproval → 请求审批
+  │       ├─ 如果配置了 Guardian → 路由到 Guardian 子 agent
+  │       ├─ 否则 → 请求用户审批
+  │       └─ Denied/Abort/TimedOut → 拒绝; Approved → 继续
+  │
+  ├─ 2. 首次执行（在沙箱中）
+  │   ├─ sandbox_mode_for_first_attempt() → 确定沙箱类型
+  │   ├─ begin_network_approval() → 网络访问审批
+  │   ├─ tool.run(req, attempt, ctx) → 实际执行
+  │   ├─ 成功 → 返回结果
+  │   └─ SandboxDenied → 进入升级重试
+  │
+  └─ 3. 升级重试（sandbox escalation）
+      ├─ 再次请求审批（除非已批准且无网络问题）
+      └─ 以 SandboxType::None 重试执行
+```
+
+### 工具目录结构
+
+- `tools/orchestrator.rs` — 审批→沙箱→执行→重试编排
+- `tools/sandboxing.rs` — ToolRuntime trait、ApprovalStore（缓存审批决策）、SandboxAttempt
+- `tools/router.rs` — ToolRouter，根据工具名路由到对应 handler
+- `tools/registry.rs` — ToolHandler trait，工具注册
+- `tools/network_approval.rs` — 网络访问审批（Immediate/Deferred 两种模式）
+- `tools/handlers/` — 具体工具实现：
+  - `shell.rs` — ShellHandler / ShellCommandHandler，命令执行
+  - `apply_patch.rs` — 代码补丁应用
+  - `mcp.rs` — MCP 工具调用
+  - `multi_agents.rs` / `multi_agents_v2/` — 子 agent 派生
+  - `dynamic.rs` — 动态工具
+  - `plan.rs` — 计划生成
+  - `request_permissions.rs` — 权限请求
+- `tools/runtimes/` — 工具运行时实现（shell 等）
 
 ## 阶段五：多 Agent 系统
 
 这是架构上最有设计感的部分。
 
-1. `codex-rs/core/src/agent/control.rs` — AgentControl，agent 的控制平面（派生、消息传递）
-2. `codex-rs/core/src/agent/registry.rs` — agent 注册表，深度限制防止无限递归
-3. `codex-rs/core/src/agent/mailbox.rs` — 异步消息邮箱，agent 间通信机制
-4. 回头看 `multi_agents_v2.rs`，理解 fork 模式（FullHistory vs LastNTurns）
+### AgentControl — 控制平面 (`agent/control.rs`)
+
+```
+AgentControl {
+    manager: Weak<ThreadManagerState>,  // Weak 避免循环引用
+    state: Arc<AgentRegistry>,          // 共享注册表
+}
+```
+
+- `spawn_agent()` → 创建新 agent 线程
+  - 支持两种 fork 模式：`FullHistory`（完整历史）/ `LastNTurns(n)`（最近 N 轮）
+  - 继承父 agent 的 `ShellSnapshot` 和 `ExecPolicyManager`
+  - 通过 `send_input()` 向子 agent 发送初始 prompt
+  - 深度限制：`depth >= config.agent_max_depth` 时禁用 SpawnCsv/Collab
+- `AgentRegistry` (`agent/registry.rs`) — 跟踪存活 agent，管理 spawn slot，分配昵称
+- `agent_names.txt` — 预定义的 agent 昵称列表
+
+### Mailbox — 异步消息通信 (`agent/mailbox.rs`)
+
+```
+Mailbox (发送端)
+  ├─ tx: mpsc::UnboundedSender<InterAgentCommunication>
+  ├─ next_seq: AtomicU64  // 单调递增序列号
+  └─ seq_tx: watch::Sender<u64>  // 通知订阅者有新消息
+
+MailboxReceiver (接收端)
+  ├─ rx: mpsc::UnboundedReceiver
+  └─ pending_mails: VecDeque  // 本地缓冲队列
+```
+
+- `send()` — 发送消息 + 递增序列号 + 通知 watch 订阅者
+- `drain()` — 批量取出所有 pending 消息
+- `has_pending_trigger_turn()` — 检查是否有需要唤醒 session 的消息
+- `trigger_turn` 标记：当子 agent 完成时，可以唤醒父 agent 开始新 turn
+
+### 关键文件
+
+1. `core/src/agent/control.rs` — AgentControl，spawn/message 的控制平面
+2. `core/src/agent/registry.rs` — agent 注册表，深度限制防止无限递归
+3. `core/src/agent/mailbox.rs` — 异步消息邮箱
+4. `core/src/agent/role.rs` — agent 角色配置
+5. `core/src/tools/handlers/multi_agents_v2/` — v2 多 agent 工具实现
 
 ## 阶段六：Guardian 安全机制
 
-Codex 的安全设计是一大亮点。
+Codex 的安全设计是一大亮点。核心理念：fail-closed（宁可误拒不可误放）。
 
-1. `codex-rs/core/src/guardian/review.rs` — 审查编排
-2. `codex-rs/core/src/guardian/prompt.rs` — guardian prompt 构建（压缩上下文 + 策略注入）
-3. `codex-rs/core/src/guardian/review_session.rs` — guardian 作为子 agent 运行，90 秒超时，fail-closed
-4. `codex-rs/core/src/guardian/approval_request.rs` — 请求格式化
+### 设计概览
 
-关键设计理念：guardian 超时 = 拒绝执行，宁可误拒不可误放。
+```
+ToolOrchestrator 发现 NeedsApproval
+  → routes_approval_to_guardian() 检查是否启用 Guardian
+  → review_approval_request()
+    → run_guardian_review()
+      │
+      ├─ 1. 发送 GuardianAssessment(InProgress) 事件
+      ├─ 2. 选择模型：优先 gpt-5.4，否则用父 turn 的模型
+      ├─ 3. build_guardian_review_session_config() → 构建只读沙箱配置
+      ├─ 4. guardian_review_session.run_review() → 运行 Guardian 子 agent
+      │     ├─ 构建压缩 transcript（最近 40 条，消息 10K token，工具 10K token）
+      │     ├─ 注入 guardian policy prompt
+      │     ├─ 要求输出结构化 JSON（schema 约束）
+      │     └─ 90 秒超时
+      │
+      └─ 5. 解析结果
+          ├─ 成功 → parse_guardian_assessment() → Allow/Deny
+          ├─ 超时 → TimedOut → 拒绝（但提示可重试）
+          ├─ 解析失败 → Deny（risk=high）
+          └─ 执行失败 → Deny（risk=high）
+```
+
+### Guardian 输出结构
+
+```rust
+struct GuardianAssessment {
+    risk_level: GuardianRiskLevel,           // low/medium/high/critical
+    user_authorization: GuardianUserAuthorization, // unknown/low/medium/high
+    outcome: GuardianAssessmentOutcome,      // allow/deny
+    rationale: String,                       // 决策理由
+}
+```
+
+### 关键设计决策
+
+- Guardian 自身运行在只读沙箱，`approval_policy = never`，不会触发进一步审批
+- 推理 effort 设为 `Low`（快速决策，不需要深度推理）
+- 支持 trunk session 复用（保持 prompt cache key 稳定）
+- 并行审批时 fork trunk，避免互相阻塞
+- 被拒绝后，agent 收到明确指令：不得通过变通方式绕过
+- 超时后，agent 被告知"不要因超时就认为不安全，可以重试一次或请求用户指导"
+
+### 关键常量 (`guardian/mod.rs`)
+
+- `GUARDIAN_REVIEW_TIMEOUT` = 90 秒
+- `GUARDIAN_PREFERRED_MODEL` = "gpt-5.4"
+- `GUARDIAN_MAX_MESSAGE_TRANSCRIPT_TOKENS` = 10,000
+- `GUARDIAN_MAX_TOOL_TRANSCRIPT_TOKENS` = 10,000
+- `GUARDIAN_RECENT_ENTRY_LIMIT` = 40 条
+
+### 关键文件
+
+1. `guardian/mod.rs` — 模块入口，常量定义，GuardianAssessment 结构
+2. `guardian/review.rs` — 审查编排，fail-closed 逻辑
+3. `guardian/prompt.rs` — prompt 构建（压缩 transcript + 策略注入 + JSON schema）
+4. `guardian/review_session.rs` — Guardian session 管理（trunk 复用 + fork）
+5. `guardian/approval_request.rs` — 请求格式化
+6. `guardian/policy.md` — Guardian 策略文档（值得一读）
 
 ## 阶段七：上层 UI 和接入层
 
