@@ -462,6 +462,42 @@ skill_instructions (来自激活的 skill)
 - `SkillInstructions` — 从 skill 定义加载，包含 name、path、contents
 - Fragment marker 机制允许 context diff：只发送变化的部分，而非每次全量注入
 
+### ModelClient — LLM 通信层
+
+Codex 与 OpenAI API 交互的核心，支持 WebSocket 和 HTTP 双通道。
+
+**两层抽象**:
+```
+ModelClient (session 级别)
+  ├─ auth_manager — 认证管理
+  ├─ provider — 模型提供商信息
+  ├─ conversation_id — 会话 ID
+  ├─ cached_websocket_session — WebSocket 连接缓存
+  └─ disable_websockets — 降级标记
+
+ModelClientSession (turn 级别)
+  ├─ websocket_session — 当前 WebSocket 连接 + 上次请求/响应
+  └─ turn_state: OnceLock<String> — sticky routing token
+```
+
+**stream() 双通道流程**:
+```
+stream(prompt, model_info, ...)
+  ├─ WebSocket 启用？
+  │   ├─ 是 → stream_responses_websocket()
+  │   │   ├─ 支持增量请求（只发 diff，不重发完整 history）
+  │   │   ├─ 成功 → 返回 ResponseStream
+  │   │   └─ FallbackToHttp → 降级到 HTTP
+  │   └─ 否（已降级或不支持）
+  └─ stream_responses_api() → HTTP SSE 流式请求
+```
+
+**关键设计**:
+- `x-codex-turn-state` header：服务端返回，客户端在同一 turn 内回传，实现 sticky routing
+- `window_generation`：compact 后递增，触发 WebSocket session 重置
+- 重试耗尽后永久降级到 HTTP（`force_http_fallback`），不再尝试 WebSocket
+- WebSocket 连接在 turn 间缓存复用（`cached_websocket_session`）
+
 ### Prompt 构建
 
 `build_prompt()` (`codex.rs:6719`) 组装发给 LLM 的完整请求：
