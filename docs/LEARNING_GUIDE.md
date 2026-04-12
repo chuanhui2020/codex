@@ -367,6 +367,74 @@ Model Context Protocol 连接管理，让 agent 能调用外部工具。
 - 关注几个关键设计模式：Tokio async/await、Arc/Weak 避免循环引用、Mailbox 模式、fail-closed 安全策略
 - 可以用 `git log --oneline codex-rs/core/src/guardian/` 这类命令看某个模块的演进历史，理解设计决策的背景
 
+## 附录：横切面主题
+
+### Context 管理与 Compact 系统
+
+agent 能持续长对话的关键机制。
+
+**ContextManager** (`core/src/context_manager/history.rs`):
+```rust
+struct ContextManager {
+    items: Vec<ResponseItem>,          // 有序对话历史（最旧在前）
+    history_version: u64,              // 每次 compact/rollback 递增
+    token_info: Option<TokenUsageInfo>, // token 用量追踪
+    reference_context_item: Option<TurnContextItem>, // 上下文基线，用于 diff
+}
+```
+
+**Compact 流程** (`core/src/compact.rs`):
+```
+run_turn() 检测 token 超限
+  → run_auto_compact()
+    → 把当前 history + SUMMARIZATION_PROMPT 发给 LLM
+    → LLM 返回压缩摘要
+    → 用摘要替换旧 history
+    → 如果仍超限 → 从头部裁剪最旧 item → 重试
+    → 重置 WebSocket session（因为 history 变了）
+```
+
+关键常量：
+- `COMPACT_USER_MESSAGE_MAX_TOKENS` = 20,000
+- 支持两种触发：Auto（token 超限）和 Manual（用户 `/compact`）
+- 两种 phase：PreTurn（turn 开始前）和 MidTurn（turn 进行中）
+- `InitialContextInjection`：MidTurn 时注入到最后一条用户消息之前
+
+### Exec Policy 规则引擎
+
+决定哪些命令可以自动执行、哪些需要审批。
+
+**Policy** (`execpolicy/src/policy.rs`):
+```rust
+struct Policy {
+    rules_by_program: MultiMap<String, RuleRef>,  // 按程序名索引
+    network_rules: Vec<NetworkRule>,               // 网络访问规则
+    host_executables_by_name: HashMap<String, Arc<[AbsolutePathBuf]>>,
+}
+```
+
+**规则匹配**:
+- `PrefixRule` — 命令前缀匹配（如规则 `["git", "commit"]` 匹配 `git commit -m "xxx"`）
+- `PatternToken::Single` — 精确匹配单个 token
+- `PatternToken::Alts` — 多选匹配（如 `["add", "commit"]` 匹配其中任一）
+- `Decision` — Allow（自动执行）/ Deny（拒绝）/ Ask（需要审批）
+- 支持 heuristics fallback 作为兜底策略
+- 支持运行时动态追加规则（`blocking_append_allow_prefix_rule`）
+
+### 关键设计模式总结
+
+| 模式 | 用途 | 示例 |
+|------|------|------|
+| `Arc<T>` + `Weak<T>` | 共享所有权 + 避免循环引用 | AgentControl → ThreadManagerState |
+| `async_channel` | 跨 task 通信 | submission_loop 的 tx_sub/rx_sub |
+| `watch::channel` | 状态广播 | AgentStatus、Mailbox 序列号 |
+| `CancellationToken` | 协作式取消 | turn 中断、guardian 超时 |
+| `FuturesOrdered` | 并行工具执行 + 有序结果 | try_run_sampling_request 的 in_flight |
+| fail-closed | 安全默认 | Guardian 超时/解析失败 = 拒绝 |
+| sandbox escalation | 渐进式权限 | 沙箱拒绝 → 请求审批 → 无沙箱重试 |
+| trunk + fork | session 复用 | Guardian review session 缓存 |
+| prefix cache 友好 | 性能优化 | compact 从头部裁剪、history 追加 |
+
 ## 架构总览
 
 ```
