@@ -421,6 +421,47 @@ struct Policy {
 - 支持 heuristics fallback 作为兜底策略
 - 支持运行时动态追加规则（`blocking_append_allow_prefix_rule`）
 
+### Hooks 生命周期钩子
+
+用户可配置的 shell 命令，在关键生命周期点触发。
+
+**5 个钩子点** (`hooks/src/events/`):
+| 钩子 | 触发时机 | 可以做什么 |
+|------|---------|-----------|
+| `session_start` | session 初始化时 | 注入额外上下文 |
+| `user_prompt_submit` | 用户提交 prompt 后 | 拦截/修改用户输入 |
+| `pre_tool_use` | 工具执行前 | 审批/拦截工具调用 |
+| `post_tool_use` | 工具执行后 | 记录/审计工具结果 |
+| `stop` | turn 结束时 | 注入后续指令、触发继续 |
+
+**执行模型**:
+- `HookResult::Success` — 继续
+- `HookResult::FailedContinue` — 失败但继续执行后续 hook
+- `HookResult::FailedAbort` — 失败并中止整个操作
+- Hook payload 是 JSON 序列化的（session_id、cwd、triggered_at、hook_event）
+- `ClaudeHooksEngine` 从 config layer stack 加载 hook 定义，通过 shell 执行
+
+### Instructions 系统指令
+
+控制 agent 行为的指令层次。
+
+**指令来源和优先级**:
+```
+base_instructions (模型默认指令)
+  ↓ 被覆盖
+config.base_instructions (用户配置覆盖)
+  ↓ 叠加
+developer_instructions (开发者指令)
+  ↓ 叠加
+user_instructions (来自 AGENTS.md 文件)
+  ↓ 叠加
+skill_instructions (来自激活的 skill)
+```
+
+- `UserInstructions` — 从项目目录的 `AGENTS.md` 加载，用 fragment marker 包裹
+- `SkillInstructions` — 从 skill 定义加载，包含 name、path、contents
+- Fragment marker 机制允许 context diff：只发送变化的部分，而非每次全量注入
+
 ### Prompt 构建
 
 `build_prompt()` (`codex.rs:6719`) 组装发给 LLM 的完整请求：
