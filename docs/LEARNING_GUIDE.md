@@ -305,11 +305,61 @@ struct GuardianAssessment {
 
 ## 阶段八：支撑系统（按兴趣选读）
 
-- `codex-rs/config/` + `core/src/config/` — 分层配置系统
-- `codex-rs/core/src/skills/` — 技能加载和依赖解析
-- `codex-rs/sandboxing/` — 跨平台沙箱实现（Linux landlock、macOS、Windows）
-- `codex-rs/exec/` + `codex-rs/execpolicy/` — 执行策略评估
-- `codex-rs/codex-mcp/` — MCP 协议实现
+### 沙箱系统 (`codex-rs/sandboxing/`)
+
+跨平台沙箱实现，是安全执行的基础设施。
+
+```
+SandboxType 枚举:
+  ├─ MacosSeatbelt   — macOS: sandbox-exec + .sbpl 策略文件
+  ├─ LinuxSeccomp    — Linux: Landlock + Seccomp（通过 codex-linux-sandbox 二进制）
+  ├─ WindowsRestrictedToken — Windows: 受限令牌
+  └─ None            — 无沙箱（升级重试时使用）
+```
+
+- `manager.rs` — `SandboxManager`，根据平台和策略选择沙箱类型
+- `seatbelt.rs` + `*.sbpl` — macOS Seatbelt 策略（基础策略 + 网络策略）
+- `landlock.rs` — Linux Landlock 文件系统隔离
+- `bwrap.rs` — Linux bubblewrap 容器（可选）
+- `policy_transforms.rs` — 策略转换，计算有效的文件系统/网络沙箱策略
+- `get_platform_sandbox()` — 自动检测当前平台可用的沙箱类型
+
+### MCP 系统 (`codex-rs/codex-mcp/`)
+
+Model Context Protocol 连接管理，让 agent 能调用外部工具。
+
+- `mcp_connection_manager.rs` — 核心管理器
+  - 每个 MCP server 一个 `RmcpClient`，按 server name 索引
+  - `list_all_tools()` — 聚合所有 server 的工具，返回全限定名 → Tool 的 map
+  - 支持 elicitation（MCP server 向用户请求输入）
+  - 支持 OAuth 认证
+- `mcp_tool_names.rs` — 工具名限定（`server_name.tool_name`）
+- `mcp/` — MCP 配置、server 发现、工具过滤
+
+### 配置系统 (`codex-rs/config/`)
+
+分层 TOML 配置，支持多级覆盖。
+
+- `config_toml.rs` — `ConfigToml` 结构，从 `~/.codex/config.toml` 反序列化
+  - 模型选择、provider、context window、审批策略、沙箱策略
+  - MCP server 配置、Skills 配置、Plugin 配置
+  - 支持 JSON Schema 生成（`schemars`）
+- `permissions_toml.rs` — 权限配置
+- `merge.rs` — 配置合并逻辑（defaults → system → user → CLI overrides）
+- `constraint.rs` — 配置约束验证
+- `schema.rs` — JSON Schema 导出（`just write-config-schema`）
+
+### 其他值得了解的 crate
+
+- `codex-rs/skills/` — 技能定义和元数据
+- `codex-rs/core/src/skills/` — 技能加载、注入、依赖解析
+- `codex-rs/exec/` — 非交互式执行模式
+- `codex-rs/execpolicy/` — 执行策略评估（Starlark 规则引擎）
+- `codex-rs/rollout/` — 事件持久化和回放
+- `codex-rs/state/` — SQLite 线程状态数据库
+- `codex-rs/login/` — 认证（ChatGPT OAuth、API key、device code）
+- `codex-rs/otel/` — OpenTelemetry 可观测性
+- `codex-rs/network-proxy/` — 网络代理管理
 
 ## 学习建议
 
