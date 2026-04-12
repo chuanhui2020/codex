@@ -258,8 +258,50 @@ struct GuardianAssessment {
 
 到这里核心已经理解了，UI 层相对独立。
 
-- `codex-rs/tui/` — 基于 ratatui 的终端 UI
-- `codex-rs/app-server/` — 基于 Axum 的 HTTP/WebSocket 服务，给 VS Code 等 IDE 用
+### 连接架构
+
+```
+┌─────────────┐     InProcessAppServerClient      ┌──────────────┐
+│     TUI     │ ←── bounded in-memory channels ──→ │  App-Server  │
+│  (ratatui)  │     (JSON-RPC, 零网络开销)          │ (codex-core) │
+└─────────────┘                                    └──────────────┘
+
+┌─────────────┐     RemoteAppServerClient          ┌──────────────┐
+│  VS Code /  │ ←── HTTP/WebSocket/stdio ────────→ │  App-Server  │
+│  Cursor     │     (JSON-RPC over transport)       │ (codex-core) │
+└─────────────┘                                    └──────────────┘
+```
+
+### TUI (`codex-rs/tui/`)
+
+- `app.rs` — 主应用状态机，处理 `AppEvent` 和 `AppCommand`
+- `app_event.rs` — 键盘/鼠标/系统事件定义
+- `app_server_session.rs` — 封装 `InProcessAppServerClient`，TUI 与 core 的桥梁
+- `chatwidget.rs` — 消息渲染组件
+- `bottom_pane/` — 输入框、审批弹窗、footer
+- `render/` — 终端渲染管线
+- `markdown_render.rs` — Markdown 渲染 + 语法高亮
+- `diff_render.rs` — 文件变更可视化
+- 基于 ratatui 框架，禁止 `print_stdout`/`print_stderr`（alternate screen 模式）
+
+### App-Server (`codex-rs/app-server/`)
+
+- `in_process.rs` — 进程内运行时，用内存通道替代 socket
+  - `InProcessClientHandle` 提供 `request()` / `notify()` / `next_event()`
+  - 背压机制：`try_send` + `WouldBlock`，审批请求永不静默丢弃
+- `message_processor.rs` — JSON-RPC 消息处理器，统一处理所有 transport
+- `codex_message_processor.rs` — Codex 特定的消息处理逻辑
+- `transport/` — 传输层实现（WebSocket、stdio、remote control）
+- `config_api.rs` — 配置读写 API
+- `fs_api.rs` — 文件系统 API
+- 基于 Axum 框架
+
+### 关键设计
+
+- TUI 和 IDE 共享同一个 App-Server 协议，行为完全一致
+- In-process 模式避免了序列化/反序列化和网络开销
+- `codex-app-server-protocol` crate 定义了完整的 JSON-RPC 协议（v1/v2）
+- `codex-app-server-client` crate 封装了客户端逻辑（InProcess / Remote）
 
 ## 阶段八：支撑系统（按兴趣选读）
 
