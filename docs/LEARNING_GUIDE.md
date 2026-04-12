@@ -421,6 +421,40 @@ struct Policy {
 - 支持 heuristics fallback 作为兜底策略
 - 支持运行时动态追加规则（`blocking_append_allow_prefix_rule`）
 
+### Prompt 构建
+
+`build_prompt()` (`codex.rs:6719`) 组装发给 LLM 的完整请求：
+
+```rust
+Prompt {
+    input: Vec<ResponseItem>,       // 完整对话历史（从 ContextManager 拉取）
+    tools: Vec<ToolSpec>,           // 模型可见的工具规格（从 ToolRouter 获取）
+    parallel_tool_calls: bool,      // 是否支持并行工具调用（模型能力决定）
+    base_instructions: BaseInstructions, // 系统指令
+    personality: Personality,       // 人格设定
+    output_schema: Option<Value>,   // 可选的 JSON Schema 约束最终输出
+}
+```
+
+工具规格来自 `ToolRouter::model_visible_specs()`，延迟加载的 dynamic tools 会被过滤。
+
+### Rollout 持久化
+
+对话历史的持久化机制，支持 session 恢复和离线检查。
+
+**RolloutRecorder** (`rollout/src/recorder.rs`):
+- JSONL 格式，每行一个 `RolloutItem`（ResponseItem / EventMsg / SessionMeta / TurnContext）
+- 通过 `mpsc` channel 异步写入，不阻塞主循环
+- 文件路径：`~/.codex/sessions/rollout-{timestamp}-{uuid}.jsonl`
+- 支持 Create（新建）和 Resume（从已有文件恢复）
+- 配合 SQLite state db（`codex-rs/state/`）存储线程元数据
+- `EventPersistenceMode` 控制哪些事件需要持久化
+
+可以用 `jq` 直接检查 rollout 文件：
+```bash
+jq -C . ~/.codex/sessions/rollout-*.jsonl
+```
+
 ### 启动流程：从 CLI 到 Session 就绪
 
 完整的启动链路，帮助理解各层如何串联。
